@@ -255,7 +255,11 @@ function XROriginRig({
   const isXRSessionActive = useXR((xr) => xr.session != null);
   const inputSourceStates = useXR((xr) => xr.inputSourceStates);
   const zoomDirectionRef = useRef(new THREE.Vector3());
+  const strafeDirectionRef = useRef(new THREE.Vector3());
   const zoomStepRef = useRef(new THREE.Vector3());
+  const desiredHeadPositionRef = useRef(new THREE.Vector3());
+  const currentHeadOffsetRef = useRef(new THREE.Vector3());
+  const moveVectorRef = useRef(new THREE.Vector3());
 
   useFrame(({ camera }, delta) => {
     if (!isXRSessionActive || !originRef.current) return;
@@ -269,8 +273,29 @@ function XROriginRig({
 
     const viewpointChanged = previousViewpointRef.current !== viewpoint;
     if (viewpointChanged || !isInitializedRef.current) {
-      originRef.current.position.copy(defaultPosition);
-      originRef.current.lookAt(target);
+      // Ensure selected target appears in front of current headset gaze at XR start.
+      camera.getWorldDirection(zoomDirectionRef.current);
+      zoomDirectionRef.current.y = 0;
+      if (zoomDirectionRef.current.lengthSq() <= 1e-6) {
+        zoomDirectionRef.current.set(0, 0, -1);
+      }
+      zoomDirectionRef.current.normalize();
+
+      const followDistance = Math.max(2, defaultPosition.distanceTo(target));
+      desiredHeadPositionRef.current
+        .copy(target)
+        .addScaledVector(zoomDirectionRef.current, -followDistance);
+      desiredHeadPositionRef.current.y =
+        target.y + (defaultPosition.y + XR_EYE_HEIGHT_OFFSET);
+
+      currentHeadOffsetRef.current
+        .copy(camera.position)
+        .sub(originRef.current.position);
+
+      originRef.current.position
+        .copy(desiredHeadPositionRef.current)
+        .sub(currentHeadOffsetRef.current);
+
       previousTargetRef.current.copy(target);
       previousViewpointRef.current = viewpoint;
       isInitializedRef.current = true;
@@ -290,16 +315,19 @@ function XROriginRig({
           (state) => state.type === "controller",
         ) ?? [];
 
-      // Auto-detect active movement hand (left or right) by strongest thumbstick Y axis.
+      // Auto-detect active movement hand (left or right) by strongest thumbstick magnitude.
+      let activeXAxis = 0;
       let activeYAxis = 0;
       let activeIntensity = XR_THUMBSTICK_DEAD_ZONE;
       for (const controllerState of controllerStates) {
         const thumbstick =
           controllerState.gamepad?.[XR_THUMBSTICK_COMPONENT_ID];
+        const xAxis = thumbstick?.xAxis ?? 0;
         const yAxis = thumbstick?.yAxis ?? 0;
-        const intensity = Math.abs(yAxis);
+        const intensity = Math.hypot(xAxis, yAxis);
         if (intensity > activeIntensity) {
           activeIntensity = intensity;
+          activeXAxis = xAxis;
           activeYAxis = yAxis;
         }
       }
@@ -310,9 +338,23 @@ function XROriginRig({
         zoomDirectionRef.current.y = 0;
         if (zoomDirectionRef.current.lengthSq() > 1e-6) {
           zoomDirectionRef.current.normalize();
-          zoomStepRef.current
+
+          strafeDirectionRef.current
+            .crossVectors(zoomDirectionRef.current, camera.up)
+            .normalize();
+
+          moveVectorRef.current
             .copy(zoomDirectionRef.current)
-            .multiplyScalar(-activeYAxis * XR_FORWARD_SPEED * delta);
+            .multiplyScalar(-activeYAxis)
+            .addScaledVector(strafeDirectionRef.current, activeXAxis);
+
+          if (moveVectorRef.current.lengthSq() > 1) {
+            moveVectorRef.current.normalize();
+          }
+
+          zoomStepRef.current
+            .copy(moveVectorRef.current)
+            .multiplyScalar(XR_FORWARD_SPEED * delta);
           originRef.current.position.add(zoomStepRef.current);
         }
       }
@@ -538,7 +580,7 @@ export default function Scene() {
               </div>
               <p className="text-[10px] text-white/35 leading-relaxed">
                 {xrInputMode === "controller"
-                  ? "Dùng thumbstick trái hoặc phải để zoom tới/lùi."
+                  ? "Dùng thumbstick trái hoặc phải để tiến/lùi và đi ngang trái/phải."
                   : "Chế độ Hand Tracking tắt thumbstick locomotion để tránh xung đột input."}
               </p>
             </div>
