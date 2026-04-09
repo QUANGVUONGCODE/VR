@@ -327,16 +327,22 @@ export default function Scene() {
     try {
       const isSupported = await navigator.xr.isSessionSupported("immersive-vr");
       if (!isSupported) {
-        setXrIssue("Thiết bị không hỗ trợ immersive-vr hoặc quyền XR chưa được cấp.");
+        setXrIssue(
+          "Thiết bị không hỗ trợ immersive-vr hoặc quyền XR chưa được cấp.",
+        );
         return;
       }
 
       const session = await store.enterVR();
       if (!session) {
-        setXrIssue("Không thể bắt đầu phiên VR. Hãy kiểm tra HTTPS/permissions trên Quest.");
+        setXrIssue(
+          "Không thể bắt đầu phiên VR. Hãy kiểm tra HTTPS/permissions trên Quest.",
+        );
       }
     } catch {
-      setXrIssue("Bắt đầu phiên VR thất bại. Hãy thử mở bằng HTTPS hoặc localhost trực tiếp.");
+      setXrIssue(
+        "Bắt đầu phiên VR thất bại. Hãy thử mở bằng HTTPS hoặc localhost trực tiếp.",
+      );
     }
   };
 
@@ -488,7 +494,10 @@ export default function Scene() {
         />
         <XR store={store}>
           <PerspectiveCamera makeDefault position={[0, 5, 15]} fov={45} />
-          <XROriginRig viewpoint={viewpoint} orbitCurrentRef={orbitCurrentRef} />
+          <XROriginRig
+            viewpoint={viewpoint}
+            orbitCurrentRef={orbitCurrentRef}
+          />
           <color attach="background" args={["#000000"]} />
 
           <ambientLight intensity={0.05} />
