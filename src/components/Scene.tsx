@@ -136,6 +136,52 @@ function CameraRig({
       return;
     }
 
+    // --- WebXR Gamepad Controls (Zoom and Move around Earth/Target) ---
+    // Enable movement in VR with Meta Quest 3 thumbsticks
+    if (store.getState().session) {
+      let isMoving = false;
+      const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+      let moveX = 0;
+      let moveY = 0;
+      for (const gp of gamepads) {
+        if (gp && gp.axes) {
+          // Read axes (0/1 for left thumbstick, 2/3 for right thumbstick)
+          const currX = (Math.abs(gp.axes[0]) > 0.1 ? gp.axes[0] : 0) + (Math.abs(gp.axes[2]) > 0.1 ? gp.axes[2] : 0);
+          const currY = (Math.abs(gp.axes[1]) > 0.1 ? gp.axes[1] : 0) + (Math.abs(gp.axes[3]) > 0.1 ? gp.axes[3] : 0);
+          moveX += currX;
+          moveY += currY;
+        }
+      }
+      
+      if (Math.abs(moveX) > 0 || Math.abs(moveY) > 0) {
+        isMoving = true;
+        // Zooming (Forward/Backward) based on Y axis
+        const direction = new THREE.Vector3();
+        camera.getWorldDirection(direction);
+        camera.position.addScaledVector(direction, -moveY * 1.5);
+        
+        // Strafe (Left/Right) based on X axis
+        const right = new THREE.Vector3().crossVectors(direction, camera.up).normalize();
+        camera.position.addScaledVector(right, moveX * 1.5);
+        
+        controls.target.copy(nextTarget); 
+        controls.update();
+      }
+
+      // Khi người dùng không tự điều hướng (thả cần xoay), vẫn duy trì khoảng cách bay theo hành tinh
+      if (!isMoving) {
+        const deltaTarget = nextTarget.clone().sub(previousTargetRef.current);
+        if (deltaTarget.lengthSq() > 0) {
+           camera.position.add(deltaTarget);
+           controls.target.copy(nextTarget);
+           controls.update();
+        }
+      }
+      previousTargetRef.current.copy(nextTarget);
+      return; // Skip normal mouse 2D controls
+    }
+    // --- End WebXR Controls ---
+
     if (viewpoint === 'moon') {
       // Khóa cứng camera vào vị trí tương đối của Mặt Trăng, loại bỏ sai số cộng dồn delta và Damping lệch
       camera.position.copy(nextDefaultPosition);
@@ -171,7 +217,7 @@ import { useEffect } from 'react';
 
 export default function Scene() {
   const [orbitProgress, setOrbitProgress] = useState(0); // 0 to 365 days
-  const [playbackSpeed, setPlaybackSpeed] = useState(10); // days per second
+  const [playbackSpeed, setPlaybackSpeed] = useState(0.1); // days per second
   const orbitCurrentRef = useRef(0);
   const [viewpoint, setViewpoint] = useState<'earth' | 'sun' | 'moon'>('earth');
   const [sunIntensity, setSunIntensity] = useState(3000);
