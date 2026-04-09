@@ -1,0 +1,5 @@
+{
+  "name": "VR Earth Simulation",
+  "description": "A high-quality VR simulation of Earth rotating in space, featuring realistic textures, clouds, and interactive viewpoints.",
+  "requestFramePermissions": []
+}
