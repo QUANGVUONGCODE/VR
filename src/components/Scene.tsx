@@ -12,7 +12,6 @@ import {
   XROrigin,
   createXRStore,
   useXR,
-  useXRControllerLocomotion,
 } from "@react-three/xr";
 import SolarSystem from "./Earth";
 import {
@@ -20,7 +19,6 @@ import {
   Suspense,
   useMemo,
   useRef,
-  useCallback,
   type MutableRefObject,
 } from "react";
 import {
@@ -62,6 +60,16 @@ const EARTH_ORBIT_RADIUS = 12;
 const MOON_CAMERA_OFFSET: [number, number, number] = [0, 0.18, 1.15];
 const XR_EYE_HEIGHT_OFFSET = 1.6;
 const XR_FORWARD_SPEED = 1.8;
+const XR_THUMBSTICK_COMPONENT_ID = "xr-standard-thumbstick";
+const XR_THUMBSTICK_DEAD_ZONE = 0.12;
+
+type XRInputMode = "controller" | "hand";
+
+type XRInputSourceStateLike = {
+  type?: string;
+  inputSource?: { handedness?: XRHandedness };
+  gamepad?: Record<string, { xAxis?: number; yAxis?: number } | undefined>;
+};
 
 function getViewpointTargetAndCamera(
   day: number,
@@ -239,50 +247,22 @@ function CameraRig({
 function XROriginRig({
   viewpoint,
   orbitCurrentRef,
+  inputMode,
 }: {
   viewpoint: "earth" | "sun" | "moon";
   orbitCurrentRef: MutableRefObject<number>;
+  inputMode: XRInputMode;
 }) {
   const originRef = useRef<THREE.Group>(null);
   const previousViewpointRef = useRef<"earth" | "sun" | "moon">(viewpoint);
   const previousTargetRef = useRef(new THREE.Vector3(0, 0, 0));
   const isInitializedRef = useRef(false);
   const isXRSessionActive = useXR((xr) => xr.session != null);
+  const inputSourceStates = useXR((xr) => xr.inputSourceStates);
   const zoomDirectionRef = useRef(new THREE.Vector3());
   const zoomStepRef = useRef(new THREE.Vector3());
 
-  const handleZoomOnlyLocomotion = useCallback(
-    (
-      velocity: THREE.Vector3,
-      _rotationVelocityY: number,
-      deltaTime: number,
-      state: { camera: THREE.Camera },
-    ) => {
-      if (!originRef.current) return;
-
-      // Keep only forward/backward movement based on headset forward direction.
-      state.camera.getWorldDirection(zoomDirectionRef.current);
-      zoomDirectionRef.current.y = 0;
-      if (zoomDirectionRef.current.lengthSq() < 1e-6) return;
-      zoomDirectionRef.current.normalize();
-
-      zoomStepRef.current
-        .copy(zoomDirectionRef.current)
-        .multiplyScalar(-velocity.z * deltaTime);
-      originRef.current.position.add(zoomStepRef.current);
-    },
-    [],
-  );
-
-  // Quest locomotion: zoom forward/backward only, no thumbstick rotation.
-  useXRControllerLocomotion(
-    handleZoomOnlyLocomotion,
-    { speed: XR_FORWARD_SPEED },
-    false,
-    "left",
-  );
-
-  useFrame(() => {
+  useFrame(({ camera }, delta) => {
     if (!isXRSessionActive || !originRef.current) return;
 
     const day = orbitCurrentRef.current;
@@ -303,9 +283,44 @@ function XROriginRig({
     }
 
     // Keep the user following the selected celestial body while the simulation advances.
-    const delta = target.clone().sub(previousTargetRef.current);
-    if (delta.lengthSq() > 0) {
-      originRef.current.position.add(delta);
+    const deltaTarget = target.clone().sub(previousTargetRef.current);
+    if (deltaTarget.lengthSq() > 0) {
+      originRef.current.position.add(deltaTarget);
+    }
+
+    // Input mode separation: Hand Tracking mode intentionally disables thumbstick locomotion.
+    if (inputMode === "controller") {
+      const controllerStates =
+        (inputSourceStates as unknown as XRInputSourceStateLike[])?.filter(
+          (state) => state.type === "controller",
+        ) ?? [];
+
+      // Auto-detect active movement hand (left or right) by strongest thumbstick Y axis.
+      let activeYAxis = 0;
+      let activeIntensity = XR_THUMBSTICK_DEAD_ZONE;
+      for (const controllerState of controllerStates) {
+        const thumbstick =
+          controllerState.gamepad?.[XR_THUMBSTICK_COMPONENT_ID];
+        const yAxis = thumbstick?.yAxis ?? 0;
+        const intensity = Math.abs(yAxis);
+        if (intensity > activeIntensity) {
+          activeIntensity = intensity;
+          activeYAxis = yAxis;
+        }
+      }
+
+      // One-controller fallback: movement still works when only one controller is active.
+      if (activeIntensity > XR_THUMBSTICK_DEAD_ZONE) {
+        camera.getWorldDirection(zoomDirectionRef.current);
+        zoomDirectionRef.current.y = 0;
+        if (zoomDirectionRef.current.lengthSq() > 1e-6) {
+          zoomDirectionRef.current.normalize();
+          zoomStepRef.current
+            .copy(zoomDirectionRef.current)
+            .multiplyScalar(-activeYAxis * XR_FORWARD_SPEED * delta);
+          originRef.current.position.add(zoomStepRef.current);
+        }
+      }
     }
 
     previousTargetRef.current.copy(target);
@@ -324,6 +339,7 @@ export default function Scene() {
   const [sunIntensity, setSunIntensity] = useState(3000);
   const [showAtmosphere, setShowAtmosphere] = useState(true);
   const [xrIssue, setXrIssue] = useState<string | null>(null);
+  const [xrInputMode, setXrInputMode] = useState<XRInputMode>("controller");
 
   const currentMonth = useMemo(() => {
     let safeProgress = orbitProgress % 365;
@@ -342,6 +358,18 @@ export default function Scene() {
     }
     return () => clearInterval(interval);
   }, [playbackSpeed]);
+
+  useEffect(() => {
+    // Keep controller and hand-tracking separated explicitly to avoid runtime input ambiguity.
+    if (xrInputMode === "controller") {
+      store.setController(true);
+      store.setHand(false);
+      return;
+    }
+
+    store.setController(false);
+    store.setHand(true);
+  }, [xrInputMode]);
 
   const handleEnterVR = async () => {
     setXrIssue(null);
@@ -488,6 +516,35 @@ export default function Scene() {
                 ))}
               </div>
             </div>
+
+            <div className="space-y-3">
+              <span className="text-xs font-bold text-white/40 uppercase tracking-widest block">
+                XR Input Mode
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  ["controller", "Controller"],
+                  ["hand", "Hand Tracking"],
+                ] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    onClick={() => setXrInputMode(mode)}
+                    className={`px-2 py-2 rounded-xl text-[10px] font-black uppercase transition-all border ${
+                      xrInputMode === mode
+                        ? "bg-white text-black border-white shadow-xl scale-105"
+                        : "bg-transparent text-white/40 border-white/10 hover:border-white/30"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-white/35 leading-relaxed">
+                {xrInputMode === "controller"
+                  ? "Dùng thumbstick trái hoặc phải để zoom tới/lùi."
+                  : "Chế độ Hand Tracking tắt thumbstick locomotion để tránh xung đột input."}
+              </p>
+            </div>
           </div>
         </div>
 
@@ -524,6 +581,7 @@ export default function Scene() {
           <XROriginRig
             viewpoint={viewpoint}
             orbitCurrentRef={orbitCurrentRef}
+            inputMode={xrInputMode}
           />
           <color attach="background" args={["#000000"]} />
 
