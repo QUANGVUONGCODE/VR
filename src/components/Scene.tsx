@@ -7,12 +7,7 @@ import {
   Html,
   useProgress,
 } from "@react-three/drei";
-import {
-  XR,
-  XROrigin,
-  createXRStore,
-  useXR,
-} from "@react-three/xr";
+import { XR, XROrigin, createXRStore, useXR } from "@react-three/xr";
 import SolarSystem from "./Earth";
 import {
   useState,
@@ -522,10 +517,12 @@ export default function Scene() {
                 XR Input Mode
               </span>
               <div className="grid grid-cols-2 gap-2">
-                {([
-                  ["controller", "Controller"],
-                  ["hand", "Hand Tracking"],
-                ] as const).map(([mode, label]) => (
+                {(
+                  [
+                    ["controller", "Controller"],
+                    ["hand", "Hand Tracking"],
+                  ] as const
+                ).map(([mode, label]) => (
                   <button
                     key={mode}
                     onClick={() => setXrInputMode(mode)}
