@@ -7,7 +7,13 @@ import {
   Html,
   useProgress,
 } from "@react-three/drei";
-import { XR, createXRStore } from "@react-three/xr";
+import {
+  XR,
+  XROrigin,
+  createXRStore,
+  useXR,
+  useXRControllerLocomotion,
+} from "@react-three/xr";
 import SolarSystem from "./Earth";
 import {
   useState,
@@ -30,7 +36,11 @@ import {
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 
-const store = createXRStore();
+const store = createXRStore({
+  // Force VR-focused flow for Quest headsets.
+  offerSession: "immersive-vr",
+  enterGrantedSession: false,
+});
 
 const MONTHS = [
   "January",
@@ -49,6 +59,54 @@ const MONTHS = [
 
 const EARTH_ORBIT_RADIUS = 12;
 const MOON_CAMERA_OFFSET: [number, number, number] = [0, 0.18, 1.15];
+const XR_EYE_HEIGHT_OFFSET = 1.6;
+
+function getViewpointTargetAndCamera(
+  day: number,
+  viewpoint: "earth" | "sun" | "moon",
+  cameraYOffset = 0,
+) {
+  const earthAngle = (day / 365.256) * Math.PI * 2;
+  const earthX = Math.cos(earthAngle) * EARTH_ORBIT_RADIUS;
+  const earthZ = Math.sin(earthAngle) * EARTH_ORBIT_RADIUS;
+  const target = new THREE.Vector3();
+  const defaultPosition = new THREE.Vector3();
+
+  switch (viewpoint) {
+    case "sun":
+      target.set(0, 0, 0);
+      defaultPosition.set(0, 5 + cameraYOffset, 15);
+      break;
+    case "moon": {
+      const DEG2RAD = Math.PI / 180;
+      const EARTH_TILT_RAD = 23.44 * DEG2RAD;
+      const MOON_ORBIT_TILT_RAD = 5.14 * DEG2RAD;
+      const moonOrbitAngle = (day / 27.322) * Math.PI * 2;
+
+      const moonPos = new THREE.Vector3(3.5, 0, 0);
+      moonPos.applyAxisAngle(new THREE.Vector3(0, 1, 0), moonOrbitAngle);
+      moonPos.applyAxisAngle(new THREE.Vector3(0, 0, 1), MOON_ORBIT_TILT_RAD);
+      moonPos.applyAxisAngle(new THREE.Vector3(0, 0, 1), EARTH_TILT_RAD);
+
+      const worldX = earthX + moonPos.x;
+      const worldY = moonPos.y;
+      const worldZ = earthZ + moonPos.z;
+
+      target.set(worldX, worldY, worldZ);
+      defaultPosition.set(
+        worldX + MOON_CAMERA_OFFSET[0],
+        worldY + MOON_CAMERA_OFFSET[1] + cameraYOffset,
+        worldZ + MOON_CAMERA_OFFSET[2],
+      );
+      break;
+    }
+    default:
+      target.set(earthX, 0, earthZ);
+      defaultPosition.set(earthX, 2 + cameraYOffset, earthZ + 5);
+  }
+
+  return { target, defaultPosition };
+}
 
 function Loader() {
   const { progress } = useProgress();
@@ -115,52 +173,22 @@ function CameraRig({
   const previousViewpointRef = useRef<"earth" | "sun" | "moon">(viewpoint);
   const previousTargetRef = useRef(new THREE.Vector3(0, 0, 0));
   const isTargetInitializedRef = useRef(false);
+  const isXRSessionActive = useXR((xr) => xr.session != null);
 
   useFrame(({ camera }) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
-    const day = orbitCurrentRef.current;
-    // Same Earth math as Earth.tsx (365.256 instead of 365)
-    const earthAngle = (day / 365.256) * Math.PI * 2;
-    const earthX = Math.cos(earthAngle) * EARTH_ORBIT_RADIUS;
-    const earthZ = Math.sin(earthAngle) * EARTH_ORBIT_RADIUS;
-    const nextTarget = new THREE.Vector3();
-    const nextDefaultPosition = new THREE.Vector3();
-
-    switch (viewpoint) {
-      case "sun":
-        nextTarget.set(0, 0, 0);
-        nextDefaultPosition.set(0, 5, 15);
-        break;
-      case "moon": {
-        const DEG2RAD = Math.PI / 180;
-        const EARTH_TILT_RAD = 23.44 * DEG2RAD;
-        const MOON_ORBIT_TILT_RAD = 5.14 * DEG2RAD;
-        const moonOrbitAngle = (day / 27.322) * Math.PI * 2;
-
-        // Exact hierarchical calculation identical to Earth.tsx
-        const moonPos = new THREE.Vector3(3.5, 0, 0);
-        moonPos.applyAxisAngle(new THREE.Vector3(0, 1, 0), moonOrbitAngle);
-        moonPos.applyAxisAngle(new THREE.Vector3(0, 0, 1), MOON_ORBIT_TILT_RAD);
-        moonPos.applyAxisAngle(new THREE.Vector3(0, 0, 1), EARTH_TILT_RAD); // Earth tilt applies to child
-
-        const worldX = earthX + moonPos.x;
-        const worldY = moonPos.y;
-        const worldZ = earthZ + moonPos.z;
-
-        nextTarget.set(worldX, worldY, worldZ);
-        nextDefaultPosition.set(
-          worldX + MOON_CAMERA_OFFSET[0],
-          worldY + MOON_CAMERA_OFFSET[1],
-          worldZ + MOON_CAMERA_OFFSET[2],
-        );
-        break;
-      }
-      default:
-        nextTarget.set(earthX, 0, earthZ);
-        nextDefaultPosition.set(earthX, 2, earthZ + 5);
+    // In XR mode camera is managed by XROrigin; keep desktop controls out.
+    if (isXRSessionActive) {
+      isTargetInitializedRef.current = false;
+      previousViewpointRef.current = viewpoint;
+      return;
     }
+
+    const day = orbitCurrentRef.current;
+    const { target: nextTarget, defaultPosition: nextDefaultPosition } =
+      getViewpointTargetAndCamera(day, viewpoint);
 
     const viewpointChanged = previousViewpointRef.current !== viewpoint;
     if (viewpointChanged || !isTargetInitializedRef.current) {
@@ -173,58 +201,6 @@ function CameraRig({
       controls.update();
       return;
     }
-
-    // --- WebXR Gamepad Controls (Zoom and Move around Earth/Target) ---
-    // Enable movement in VR with Meta Quest 3 thumbsticks
-    if (store.getState().session) {
-      let isMoving = false;
-      const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
-      let moveX = 0;
-      let moveY = 0;
-      for (const gp of gamepads) {
-        if (gp && gp.axes) {
-          // Read axes (0/1 for left thumbstick, 2/3 for right thumbstick)
-          const currX =
-            (Math.abs(gp.axes[0]) > 0.1 ? gp.axes[0] : 0) +
-            (Math.abs(gp.axes[2]) > 0.1 ? gp.axes[2] : 0);
-          const currY =
-            (Math.abs(gp.axes[1]) > 0.1 ? gp.axes[1] : 0) +
-            (Math.abs(gp.axes[3]) > 0.1 ? gp.axes[3] : 0);
-          moveX += currX;
-          moveY += currY;
-        }
-      }
-
-      if (Math.abs(moveX) > 0 || Math.abs(moveY) > 0) {
-        isMoving = true;
-        // Zooming (Forward/Backward) based on Y axis
-        const direction = new THREE.Vector3();
-        camera.getWorldDirection(direction);
-        camera.position.addScaledVector(direction, -moveY * 1.5);
-
-        // Strafe (Left/Right) based on X axis
-        const right = new THREE.Vector3()
-          .crossVectors(direction, camera.up)
-          .normalize();
-        camera.position.addScaledVector(right, moveX * 1.5);
-
-        controls.target.copy(nextTarget);
-        controls.update();
-      }
-
-      // Khi người dùng không tự điều hướng (thả cần xoay), vẫn duy trì khoảng cách bay theo hành tinh
-      if (!isMoving) {
-        const deltaTarget = nextTarget.clone().sub(previousTargetRef.current);
-        if (deltaTarget.lengthSq() > 0) {
-          camera.position.add(deltaTarget);
-          controls.target.copy(nextTarget);
-          controls.update();
-        }
-      }
-      previousTargetRef.current.copy(nextTarget);
-      return; // Skip normal mouse 2D controls
-    }
-    // --- End WebXR Controls ---
 
     if (viewpoint === "moon") {
       // Khóa cứng camera vào vị trí tương đối của Mặt Trăng, loại bỏ sai số cộng dồn delta và Damping lệch
@@ -248,6 +224,7 @@ function CameraRig({
   return (
     <OrbitControls
       ref={controlsRef}
+      enabled={!isXRSessionActive}
       enablePan={false}
       minDistance={viewpoint === "moon" ? 0.8 : 1.2}
       maxDistance={viewpoint === "moon" ? 8 : 60}
@@ -255,6 +232,59 @@ function CameraRig({
       dampingFactor={0.08}
     />
   );
+}
+
+function XROriginRig({
+  viewpoint,
+  orbitCurrentRef,
+}: {
+  viewpoint: "earth" | "sun" | "moon";
+  orbitCurrentRef: MutableRefObject<number>;
+}) {
+  const originRef = useRef<THREE.Group>(null);
+  const previousViewpointRef = useRef<"earth" | "sun" | "moon">(viewpoint);
+  const previousTargetRef = useRef(new THREE.Vector3(0, 0, 0));
+  const isInitializedRef = useRef(false);
+  const isXRSessionActive = useXR((xr) => xr.session != null);
+
+  // Native XR locomotion based on controller thumbsticks.
+  useXRControllerLocomotion(
+    originRef,
+    { speed: 3 },
+    { type: "smooth", speed: 1.6, deadZone: 0.2 },
+    "left",
+  );
+
+  useFrame(() => {
+    if (!isXRSessionActive || !originRef.current) return;
+
+    const day = orbitCurrentRef.current;
+    const { target, defaultPosition } = getViewpointTargetAndCamera(
+      day,
+      viewpoint,
+      -XR_EYE_HEIGHT_OFFSET,
+    );
+
+    const viewpointChanged = previousViewpointRef.current !== viewpoint;
+    if (viewpointChanged || !isInitializedRef.current) {
+      originRef.current.position.copy(defaultPosition);
+      originRef.current.lookAt(target);
+      previousTargetRef.current.copy(target);
+      previousViewpointRef.current = viewpoint;
+      isInitializedRef.current = true;
+      return;
+    }
+
+    // Keep the user following the selected celestial body while the simulation advances.
+    const delta = target.clone().sub(previousTargetRef.current);
+    if (delta.lengthSq() > 0) {
+      originRef.current.position.add(delta);
+    }
+
+    previousTargetRef.current.copy(target);
+  });
+
+  return <XROrigin ref={originRef} />;
 }
 
 import { useEffect } from "react";
@@ -266,6 +296,7 @@ export default function Scene() {
   const [viewpoint, setViewpoint] = useState<"earth" | "sun" | "moon">("earth");
   const [sunIntensity, setSunIntensity] = useState(3000);
   const [showAtmosphere, setShowAtmosphere] = useState(true);
+  const [xrIssue, setXrIssue] = useState<string | null>(null);
 
   const currentMonth = useMemo(() => {
     let safeProgress = orbitProgress % 365;
@@ -284,6 +315,30 @@ export default function Scene() {
     }
     return () => clearInterval(interval);
   }, [playbackSpeed]);
+
+  const handleEnterVR = async () => {
+    setXrIssue(null);
+
+    if (typeof navigator === "undefined" || !navigator.xr) {
+      setXrIssue("Thiết bị/trình duyệt hiện tại chưa hỗ trợ WebXR.");
+      return;
+    }
+
+    try {
+      const isSupported = await navigator.xr.isSessionSupported("immersive-vr");
+      if (!isSupported) {
+        setXrIssue("Thiết bị không hỗ trợ immersive-vr hoặc quyền XR chưa được cấp.");
+        return;
+      }
+
+      const session = await store.enterVR();
+      if (!session) {
+        setXrIssue("Không thể bắt đầu phiên VR. Hãy kiểm tra HTTPS/permissions trên Quest.");
+      }
+    } catch {
+      setXrIssue("Bắt đầu phiên VR thất bại. Hãy thử mở bằng HTTPS hoặc localhost trực tiếp.");
+    }
+  };
 
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden font-sans">
@@ -404,7 +459,7 @@ export default function Scene() {
         </div>
 
         <button
-          onClick={() => store.enterVR()}
+          onClick={handleEnterVR}
           className="bg-blue-600 text-white px-8 py-5 rounded-3xl font-black text-lg hover:bg-blue-500 transition-all pointer-events-auto flex items-center justify-center gap-3 shadow-2xl group"
         >
           <Maximize
@@ -413,6 +468,11 @@ export default function Scene() {
           />
           START VR ODYSSEY
         </button>
+        {xrIssue && (
+          <div className="pointer-events-auto max-w-sm rounded-2xl border border-red-400/30 bg-red-950/60 px-4 py-3 text-sm text-red-100">
+            {xrIssue}
+          </div>
+        )}
       </div>
 
       {/* 3D Scene */}
@@ -428,6 +488,8 @@ export default function Scene() {
         />
         <XR store={store}>
           <PerspectiveCamera makeDefault position={[0, 5, 15]} fov={45} />
+          <XROriginRig viewpoint={viewpoint} orbitCurrentRef={orbitCurrentRef} />
+          <color attach="background" args={["#000000"]} />
 
           <ambientLight intensity={0.05} />
 
