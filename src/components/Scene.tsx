@@ -20,6 +20,7 @@ import {
   Suspense,
   useMemo,
   useRef,
+  useCallback,
   type MutableRefObject,
 } from "react";
 import {
@@ -60,6 +61,7 @@ const MONTHS = [
 const EARTH_ORBIT_RADIUS = 12;
 const MOON_CAMERA_OFFSET: [number, number, number] = [0, 0.18, 1.15];
 const XR_EYE_HEIGHT_OFFSET = 1.6;
+const XR_FORWARD_SPEED = 1.8;
 
 function getViewpointTargetAndCamera(
   day: number,
@@ -246,12 +248,37 @@ function XROriginRig({
   const previousTargetRef = useRef(new THREE.Vector3(0, 0, 0));
   const isInitializedRef = useRef(false);
   const isXRSessionActive = useXR((xr) => xr.session != null);
+  const zoomDirectionRef = useRef(new THREE.Vector3());
+  const zoomStepRef = useRef(new THREE.Vector3());
 
-  // Native XR locomotion based on controller thumbsticks.
+  const handleZoomOnlyLocomotion = useCallback(
+    (
+      velocity: THREE.Vector3,
+      _rotationVelocityY: number,
+      deltaTime: number,
+      state: { camera: THREE.Camera },
+    ) => {
+      if (!originRef.current) return;
+
+      // Keep only forward/backward movement based on headset forward direction.
+      state.camera.getWorldDirection(zoomDirectionRef.current);
+      zoomDirectionRef.current.y = 0;
+      if (zoomDirectionRef.current.lengthSq() < 1e-6) return;
+      zoomDirectionRef.current.normalize();
+
+      zoomStepRef.current
+        .copy(zoomDirectionRef.current)
+        .multiplyScalar(-velocity.z * deltaTime);
+      originRef.current.position.add(zoomStepRef.current);
+    },
+    [],
+  );
+
+  // Quest locomotion: zoom forward/backward only, no thumbstick rotation.
   useXRControllerLocomotion(
-    originRef,
-    { speed: 3 },
-    { type: "smooth", speed: 1.6, deadZone: 0.2 },
+    handleZoomOnlyLocomotion,
+    { speed: XR_FORWARD_SPEED },
+    false,
     "left",
   );
 
